@@ -1,0 +1,9 @@
+node_modules/
+*.log
+*.tmp
+*.zip
+*.skill
+articles/assets/
+assets/ai-cover-*.jpg
+assets/ai-cover-*.png
+assets/ai-cover-*.webp
