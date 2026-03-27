@@ -188,6 +188,14 @@ function Convert-InlineMarkdown([string]$Text) {
     return $html
 }
 
+function Get-MarkdownTableCells([string]$Line) {
+    $trimmed = $Line.Trim()
+    if ($trimmed.StartsWith('|')) { $trimmed = $trimmed.Substring(1) }
+    if ($trimmed.EndsWith('|')) { $trimmed = $trimmed.Substring(0, $trimmed.Length - 1) }
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { return @() }
+    return @($trimmed -split '\|' | ForEach-Object { $_.Trim() })
+}
+
 function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
     $body = Get-MarkdownBody -MarkdownRaw $MarkdownRaw
     $sb = New-Object System.Text.StringBuilder
@@ -196,6 +204,8 @@ function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
     $inOrderedList = $false
     $inBlockquote = $false
     $inCodeBlock = $false
+    $inTable = $false
+    $tableHeaderDone = $false
 
     [void]$sb.AppendLine('<section style="max-width:100%;font-size:16px;line-height:1.8;color:#1f2329;word-break:break-word;">')
     foreach ($lineRaw in $lines) {
@@ -206,12 +216,17 @@ function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
                 [void]$sb.AppendLine("</blockquote>")
                 $inBlockquote = $false
             }
+            if ($inTable) {
+                [void]$sb.AppendLine('</tbody></table>')
+                $inTable = $false
+                $tableHeaderDone = $false
+            }
             if ($inUnorderedList) {
-                [void]$sb.AppendLine('</ul>')
+                [void]$sb.Append('</ul>')
                 $inUnorderedList = $false
             }
             if ($inOrderedList) {
-                [void]$sb.AppendLine('</ol>')
+                [void]$sb.Append('</ol>')
                 $inOrderedList = $false
             }
 
@@ -235,24 +250,73 @@ function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
                 [void]$sb.AppendLine('</blockquote>')
                 $inBlockquote = $false
             }
+            if ($inTable) {
+                [void]$sb.AppendLine('</tbody></table>')
+                $inTable = $false
+                $tableHeaderDone = $false
+            }
             if ($inUnorderedList) {
-                [void]$sb.AppendLine('</ul>')
+                [void]$sb.Append('</ul>')
                 $inUnorderedList = $false
             }
             if ($inOrderedList) {
-                [void]$sb.AppendLine('</ol>')
+                [void]$sb.Append('</ol>')
                 $inOrderedList = $false
             }
             continue
         }
 
-        if ($line -match '^\s*>\s?(.*)$') {
+        $isTableRow = $line -match '^\s*\|(.+)\|\s*$'
+        $isTableSeparator = $line -match '^\s*\|[\s\-:|]+\|\s*$'
+
+        if ($isTableRow) {
+            if ($inBlockquote) {
+                [void]$sb.AppendLine('</blockquote>')
+                $inBlockquote = $false
+            }
             if ($inUnorderedList) {
-                [void]$sb.AppendLine('</ul>')
+                [void]$sb.Append('</ul>')
                 $inUnorderedList = $false
             }
             if ($inOrderedList) {
-                [void]$sb.AppendLine('</ol>')
+                [void]$sb.Append('</ol>')
+                $inOrderedList = $false
+            }
+
+            if ($isTableSeparator) {
+                continue
+            }
+
+            $cells = Get-MarkdownTableCells -Line $line
+            if (-not $inTable) {
+                [void]$sb.AppendLine('<table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:15px;line-height:1.7;"><thead><tr>')
+                foreach ($cell in $cells) {
+                    [void]$sb.Append("<th style=""padding:10px 14px;border:1px solid #d8dee4;background:#f6f9ff;text-align:left;font-weight:700;"">$(Convert-InlineMarkdown $cell)</th>")
+                }
+                [void]$sb.AppendLine('</tr></thead><tbody>')
+                $inTable = $true
+                $tableHeaderDone = $true
+            } else {
+                [void]$sb.Append('<tr>')
+                foreach ($cell in $cells) {
+                    [void]$sb.Append("<td style=""padding:10px 14px;border:1px solid #d8dee4;text-align:left;vertical-align:top;"">$(Convert-InlineMarkdown $cell)</td>")
+                }
+                [void]$sb.AppendLine('</tr>')
+            }
+            continue
+        } elseif ($inTable) {
+            [void]$sb.AppendLine('</tbody></table>')
+            $inTable = $false
+            $tableHeaderDone = $false
+        }
+
+        if ($line -match '^\s*>\s?(.*)$') {
+            if ($inUnorderedList) {
+                [void]$sb.Append('</ul>')
+                $inUnorderedList = $false
+            }
+            if ($inOrderedList) {
+                [void]$sb.Append('</ol>')
                 $inOrderedList = $false
             }
             if (-not $inBlockquote) {
@@ -268,33 +332,33 @@ function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
 
         if ($line -match '^\s*[-*]\s+(.+)$') {
             if ($inOrderedList) {
-                [void]$sb.AppendLine('</ol>')
+                [void]$sb.Append('</ol>')
                 $inOrderedList = $false
             }
             if (-not $inUnorderedList) {
-                [void]$sb.AppendLine('<ul style="margin:16px 0;padding-left:1.4em;color:#1f2329;">')
+                [void]$sb.Append('<ul style="margin:16px 0;padding-left:1.4em;color:#1f2329;">')
                 $inUnorderedList = $true
             }
-            [void]$sb.AppendLine("<li style=""margin:8px 0;line-height:1.8;"">$(Convert-InlineMarkdown $Matches[1])</li>")
+            [void]$sb.Append("<li style=""margin:8px 0;line-height:1.8;"">$(Convert-InlineMarkdown $Matches[1])</li>")
             continue
         } elseif ($inUnorderedList) {
-            [void]$sb.AppendLine('</ul>')
+            [void]$sb.Append('</ul>')
             $inUnorderedList = $false
         }
 
         if ($line -match '^\s*\d+\.\s+(.+)$') {
             if ($inUnorderedList) {
-                [void]$sb.AppendLine('</ul>')
+                [void]$sb.Append('</ul>')
                 $inUnorderedList = $false
             }
             if (-not $inOrderedList) {
-                [void]$sb.AppendLine('<ol style="margin:16px 0;padding-left:1.4em;color:#1f2329;">')
+                [void]$sb.Append('<ol style="margin:16px 0;padding-left:1.4em;color:#1f2329;">')
                 $inOrderedList = $true
             }
-            [void]$sb.AppendLine("<li style=""margin:8px 0;line-height:1.8;"">$(Convert-InlineMarkdown $Matches[1])</li>")
+            [void]$sb.Append("<li style=""margin:8px 0;line-height:1.8;"">$(Convert-InlineMarkdown $Matches[1])</li>")
             continue
         } elseif ($inOrderedList) {
-            [void]$sb.AppendLine('</ol>')
+            [void]$sb.Append('</ol>')
             $inOrderedList = $false
         }
 
@@ -322,8 +386,9 @@ function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
     }
 
     if ($inBlockquote) { [void]$sb.AppendLine('</blockquote>') }
-    if ($inUnorderedList) { [void]$sb.AppendLine('</ul>') }
-    if ($inOrderedList) { [void]$sb.AppendLine('</ol>') }
+    if ($inTable) { [void]$sb.AppendLine('</tbody></table>') }
+    if ($inUnorderedList) { [void]$sb.Append('</ul>') }
+    if ($inOrderedList) { [void]$sb.Append('</ol>') }
     if ($inCodeBlock) { [void]$sb.AppendLine('</code></pre>') }
     [void]$sb.AppendLine('</section>')
     return $sb.ToString()
