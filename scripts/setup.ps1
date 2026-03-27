@@ -3,15 +3,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
 
 function Get-ExportValueFromTools([string]$Path, [string]$Name) {
     if (-not (Test-Path -LiteralPath $Path)) {
         return $null
     }
 
-    $lines = [System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8)
+    $lines = Get-Content -LiteralPath $Path
     $pattern = "^\s*export\s+$Name\s*=\s*(.+)\s*$"
     foreach ($line in $lines) {
         if ($line -match $pattern) {

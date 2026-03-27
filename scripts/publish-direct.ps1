@@ -7,6 +7,7 @@ param(
     [string]$Highlight = "solarized-light",
     [string]$ToolsFile = "$HOME\.openclaw\workspace\TOOLS.md",
     [switch]$AutoCover,
+    [switch]$NoAutoCover,
     [string]$AiBaseUrl = "https://yunwu.ai",
     [string]$AiModel = "doubao-seedream-5-0-260128",
     [string]$AiApiKey = $env:YUNWU_API_KEY,
@@ -14,13 +15,28 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
 
 function Write-Info([string]$Message) { Write-Host $Message -ForegroundColor Cyan }
 function Write-Ok([string]$Message) { Write-Host $Message -ForegroundColor Green }
 function Write-WarnLine([string]$Message) { Write-Host $Message -ForegroundColor Yellow }
 function Write-Fail([string]$Message) { Write-Host $Message -ForegroundColor Red }
+
+function Read-TextUtf8Strict([string]$Path) {
+    try {
+        $text = [System.IO.File]::ReadAllText($Path, (New-Object System.Text.UTF8Encoding($false, $true)))
+    } catch [System.Text.DecoderFallbackException] {
+        throw "Markdown file must be valid UTF-8: $Path"
+    }
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+        $text = $text.Substring(1)
+    }
+    return $text
+}
+
+function Assert-MarkdownUtf8([string]$Path) {
+    [void](Read-TextUtf8Strict -Path $Path)
+    Write-Info "UTF-8 check passed."
+}
 
 function Show-Help {
 @"
@@ -30,13 +46,16 @@ Usage:
 Examples:
   .\scripts\publish-direct.ps1 .\articles\ico-frt-test.md
   .\scripts\publish-direct.ps1 .\articles\ico-frt-test.md -AutoCover
+  .\scripts\publish-direct.ps1 .\articles\ico-frt-test.md -NoAutoCover
 
 Options:
   -ToolsFile    TOOLS.md path, default: $HOME\.openclaw\workspace\TOOLS.md
-  -AutoCover    Generate AI cover before publish
+  -AutoCover    Deprecated. Auto cover is enabled by default.
+  -NoAutoCover  Skip AI cover generation for this publish
   -AiBaseUrl    AI API base URL, default: https://yunwu.ai
   -AiModel      AI image model, default: doubao-seedream-5-0-260128
   -AiApiKey     AI API key (or set env: YUNWU_API_KEY)
+  [theme] [highlight] are accepted for backward compatibility only and do not affect built-in rendering
   -Help         Show this help
 "@ | Write-Host
 }
@@ -49,7 +68,7 @@ function Ensure-Command([string]$CommandName, [string]$InstallHint) {
 
 function Get-ExportValueFromTools([string]$Path, [string]$Name) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    $lines = [System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8)
+    $lines = Get-Content -LiteralPath $Path -Encoding UTF8
     $pattern = "^\s*export\s+$Name\s*=\s*(.+)\s*$"
     foreach ($line in $lines) {
         if ($line -match $pattern) {
@@ -93,7 +112,7 @@ function Parse-FrontMatter([string]$MarkdownRaw) {
     return $result
 }
 
-function Strip-FrontMatter([string]$MarkdownRaw) {
+function Get-MarkdownBody([string]$MarkdownRaw) {
     if ($MarkdownRaw -match "(?s)^---\r?\n.*?\r?\n---\r?\n?(.*)$") {
         return $Matches[1]
     }
@@ -114,7 +133,7 @@ function Invoke-CurlJson([string]$Url, [string]$Method = "GET", [string]$BodyJso
             $output = curl.exe -s --max-time $MaxTime -X $Method $Url
         } else {
             [System.IO.File]::WriteAllText($tmpFile, $BodyJson, (New-Object System.Text.UTF8Encoding($false)))
-            $output = curl.exe -s --max-time $MaxTime -X $Method -H "Content-Type: application/json; charset=utf-8" --data-binary "@$tmpFile" $Url
+            $output = curl.exe -s --max-time $MaxTime -X $Method -H "Content-Type: application/json" --data-binary "@$tmpFile" $Url
         }
         if ([string]::IsNullOrWhiteSpace($output)) { throw "Empty response from $Url" }
         return $output | ConvertFrom-Json
@@ -145,211 +164,168 @@ function Escape-Html([string]$Text) {
     return $Text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
 }
 
-function Apply-InlineMarkdown([string]$Text) {
-    $t = $Text
-    $t = [regex]::Replace($t, '\*\*(.+?)\*\*', '<strong style="font-weight:bold;color:#1a1a1a;">$1</strong>')
-    $t = [regex]::Replace($t, '(?<!\*)\*([^*]+?)\*(?!\*)', '<em style="font-style:italic;">$1</em>')
-    $t = [regex]::Replace($t, '`([^`]+?)`', '<code style="font-size:14px;background:#f5f5f5;padding:2px 6px;border-radius:3px;color:#c7254e;font-family:Consolas,monospace;">$1</code>')
-    $t = [regex]::Replace($t, '!\[[^\]]*\]\(([^)]+)\)', '<img src="$1" style="max-width:100%;border-radius:4px;margin:8px 0;" />')
-    $t = [regex]::Replace($t, '\[([^\]]+)\]\(([^)]+)\)', '<a href="$2" style="color:#576b95;text-decoration:none;border-bottom:1px solid #576b95;">$1</a>')
-    return $t
+function Escape-AttributeValue([string]$Text) {
+    return $Text.Replace('"', '&quot;').Replace("'", '&#39;')
 }
 
-function Parse-TableRow([string]$Line) {
-    $trimmed = $Line.Trim().TrimStart('|').TrimEnd('|')
-    $cells = $trimmed -split '\|'
-    $result = @()
-    foreach ($c in $cells) { $result += $c.Trim() }
-    return ,$result
-}
-
-function Test-TableSeparator([string]$Line) {
-    return $Line -match '^\s*\|[\s\-:]+(\|[\s\-:]+)+\|\s*$'
+function Convert-InlineMarkdown([string]$Text) {
+    $html = Escape-Html $Text
+    $html = [regex]::Replace($html, '!\[([^\]]*)\]\(([^)]+)\)', {
+        param($m)
+        $alt = Escape-AttributeValue $m.Groups[1].Value
+        $src = Escape-AttributeValue $m.Groups[2].Value
+        return "<img src=""$src"" alt=""$alt"" style=""display:block;width:100%;max-width:100%;height:auto;margin:18px auto;border-radius:12px;"" />"
+    })
+    $html = [regex]::Replace($html, '\[([^\]]+)\]\((https?://[^)]+)\)', {
+        param($m)
+        $label = $m.Groups[1].Value
+        $href = Escape-AttributeValue $m.Groups[2].Value
+        return "<a href=""$href"" style=""color:#2f6fed;text-decoration:none;border-bottom:1px solid #bfd3ff;"">$label</a>"
+    })
+    $html = [regex]::Replace($html, '`([^`]+)`', '<code style="font-family:Consolas,Monaco,monospace;font-size:0.92em;background:#f3f5f7;color:#c7254e;padding:2px 6px;border-radius:6px;">$1</code>')
+    $html = [regex]::Replace($html, '\*\*([^*]+)\*\*', '<strong>$1</strong>')
+    $html = [regex]::Replace($html, '__([^_]+)__', '<strong>$1</strong>')
+    return $html
 }
 
 function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
-    $sBody   = 'margin:0;padding:0;'
-    $sH1     = 'font-size:22px;font-weight:bold;color:#1a1a1a;text-align:center;margin:28px 0 20px;line-height:1.4;letter-spacing:1px;'
-    $sH2     = 'font-size:18px;font-weight:bold;color:#2b2b2b;margin:24px 0 12px;padding-left:12px;border-left:4px solid #576b95;line-height:1.5;'
-    $sH3     = 'font-size:16px;font-weight:bold;color:#3f3f3f;margin:20px 0 10px;line-height:1.5;'
-    $sP      = 'font-size:15px;color:#3f3f3f;line-height:1.8;margin:10px 0;letter-spacing:0.5px;text-align:justify;'
-    $sLi     = 'font-size:15px;color:#3f3f3f;line-height:1.8;margin:0;padding:2px 0;letter-spacing:0.5px;'
-    $sUl     = 'margin:8px 0 8px 1.2em;padding:0;list-style:disc;list-style-position:outside;'
-    $sOl     = 'margin:8px 0 8px 1.4em;padding:0;list-style:decimal;list-style-position:outside;'
-    $sQuote  = 'margin:16px 0;padding:12px 16px;background:#f8f8f8;border-left:4px solid #576b95;color:#666;font-size:14px;line-height:1.7;border-radius:0 4px 4px 0;'
-    $sHr     = 'border:none;border-top:1px solid #e5e5e5;margin:24px 0;'
-    $sTable  = 'width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;line-height:1.6;'
-    $sTh     = 'background:#f2f3f5;font-weight:bold;color:#1a1a1a;border:1px solid #ddd;padding:8px 12px;text-align:left;'
-    $sTd     = 'border:1px solid #ddd;padding:8px 12px;color:#3f3f3f;'
-
-    $inList = $false
-    $listType = ""
-    $inQuote = $false
-    $quoteLines = @()
-    $inTable = $false
-    $tableHeaderCells = @()
-    $tableRows = @()
-    $tableHasHeader = $false
+    $body = Get-MarkdownBody -MarkdownRaw $MarkdownRaw
     $sb = New-Object System.Text.StringBuilder
+    $lines = $body -split "\r?\n"
+    $inUnorderedList = $false
+    $inOrderedList = $false
+    $inBlockquote = $false
+    $inCodeBlock = $false
 
-    function Close-List {
-        if (-not $inList) { return }
-        $closeTag = if ($listType -eq "ol") { "</ol>" } else { "</ul>" }
-        [void]$sb.AppendLine($closeTag)
-        Set-Variable -Scope 1 -Name inList -Value $false
-        Set-Variable -Scope 1 -Name listType -Value ""
-    }
+    [void]$sb.AppendLine('<section style="max-width:100%;font-size:16px;line-height:1.8;color:#1f2329;word-break:break-word;">')
+    foreach ($lineRaw in $lines) {
+        $line = $lineRaw.TrimEnd()
 
-    function Open-List([string]$NextListType) {
-        if ($inList -and $listType -eq $NextListType) { return }
-        Close-List
-        $openTag = if ($NextListType -eq "ol") { "<ol style=`"$sOl`">" } else { "<ul style=`"$sUl`">" }
-        [void]$sb.AppendLine($openTag)
-        Set-Variable -Scope 1 -Name inList -Value $true
-        Set-Variable -Scope 1 -Name listType -Value $NextListType
-    }
-
-    function Flush-Table {
-        if (-not $inTable) { return }
-        [void]$sb.AppendLine("<table style=`"$sTable`">")
-        if ($tableHasHeader -and $tableHeaderCells.Count -gt 0) {
-            [void]$sb.Append("<thead><tr>")
-            foreach ($cell in $tableHeaderCells) {
-                $c = Escape-Html $cell
-                $c = Apply-InlineMarkdown $c
-                [void]$sb.Append("<th style=`"$sTh`">$c</th>")
+        if ($line -match '^\s*```') {
+            if ($inBlockquote) {
+                [void]$sb.AppendLine("</blockquote>")
+                $inBlockquote = $false
             }
-            [void]$sb.AppendLine("</tr></thead>")
-        }
-        if ($tableRows.Count -gt 0) {
-            [void]$sb.AppendLine("<tbody>")
-            foreach ($row in $tableRows) {
-                [void]$sb.Append("<tr>")
-                foreach ($cell in $row) {
-                    $c = Escape-Html $cell
-                    $c = Apply-InlineMarkdown $c
-                    [void]$sb.Append("<td style=`"$sTd`">$c</td>")
-                }
-                [void]$sb.AppendLine("</tr>")
+            if ($inUnorderedList) {
+                [void]$sb.AppendLine('</ul>')
+                $inUnorderedList = $false
             }
-            [void]$sb.AppendLine("</tbody>")
-        }
-        [void]$sb.AppendLine("</table>")
-        Set-Variable -Scope 1 -Name inTable -Value $false
-        Set-Variable -Scope 1 -Name tableHeaderCells -Value @()
-        Set-Variable -Scope 1 -Name tableRows -Value @()
-        Set-Variable -Scope 1 -Name tableHasHeader -Value $false
-    }
+            if ($inOrderedList) {
+                [void]$sb.AppendLine('</ol>')
+                $inOrderedList = $false
+            }
 
-    [void]$sb.AppendLine("<section style=`"$sBody`">")
-
-    $lines = $MarkdownRaw -split "\r?\n"
-    for ($idx = 0; $idx -lt $lines.Count; $idx++) {
-        $line = $lines[$idx].Replace([char]0x00A0, ' ').TrimEnd()
-        $trimmedLine = $line.Trim()
-
-        # --- table handling ---
-        if ($line -match '^\s*\|.+\|\s*$') {
-            Close-List
-            if (-not $inTable) {
-                $inTable = $true
-                $tableHeaderCells = @()
-                $tableRows = @()
-                $tableHasHeader = $false
-
-                $cells = Parse-TableRow $line
-                $nextIdx = $idx + 1
-                if ($nextIdx -lt $lines.Count -and (Test-TableSeparator $lines[$nextIdx])) {
-                    $tableHeaderCells = $cells
-                    $tableHasHeader = $true
-                    $idx = $nextIdx
-                } else {
-                    $tableRows += ,$cells
-                }
+            if (-not $inCodeBlock) {
+                [void]$sb.AppendLine('<pre style="margin:20px 0;padding:16px;background:#0f172a;color:#e2e8f0;border-radius:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;"><code style="font-family:Consolas,Monaco,monospace;font-size:13px;line-height:1.7;">')
+                $inCodeBlock = $true
             } else {
-                if (Test-TableSeparator $line) { continue }
-                $cells = Parse-TableRow $line
-                $tableRows += ,$cells
+                [void]$sb.AppendLine('</code></pre>')
+                $inCodeBlock = $false
             }
             continue
-        } elseif ($inTable) {
-            Flush-Table
         }
 
-        # --- blockquote ---
-        if ($line -match "^\s*>\s?(.*)$") {
-            Close-List
-            $inQuote = $true
-            $quoteLines += $Matches[1]
-            continue
-        } elseif ($inQuote) {
-            $qText = Escape-Html ($quoteLines -join " ")
-            $qText = Apply-InlineMarkdown $qText
-            [void]$sb.AppendLine("<blockquote style=`"$sQuote`">$qText</blockquote>")
-            $inQuote = $false
-            $quoteLines = @()
-        }
-
-        # --- lists ---
-        if ($inList -and [string]::IsNullOrWhiteSpace($trimmedLine)) {
-            # Keep list open across blank lines to preserve numbering and spacing.
+        if ($inCodeBlock) {
+            [void]$sb.AppendLine((Escape-Html $line))
             continue
         }
 
-        if ($line -match "^\s*[-*]\s+(.+)$") {
-            $itemText = $Matches[1].Trim()
-            if ([string]::IsNullOrWhiteSpace($itemText)) { continue }
-            Open-List -NextListType "ul"
-            $li = Escape-Html $itemText
-            $li = Apply-InlineMarkdown $li
-            [void]$sb.AppendLine("<li style=`"$sLi`">$li</li>")
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            if ($inBlockquote) {
+                [void]$sb.AppendLine('</blockquote>')
+                $inBlockquote = $false
+            }
+            if ($inUnorderedList) {
+                [void]$sb.AppendLine('</ul>')
+                $inUnorderedList = $false
+            }
+            if ($inOrderedList) {
+                [void]$sb.AppendLine('</ol>')
+                $inOrderedList = $false
+            }
             continue
-        } elseif ($line -match "^\s*(\d+)\.\s+(.+)$") {
-            $itemText = $Matches[2].Trim()
-            if ([string]::IsNullOrWhiteSpace($itemText)) { continue }
-            Open-List -NextListType "ol"
-            $li = Escape-Html $itemText
-            $li = Apply-InlineMarkdown $li
-            [void]$sb.AppendLine("<li style=`"$sLi`">$li</li>")
-            continue
-        } elseif ($inList) {
-            Close-List
         }
 
-        # --- block elements ---
-        if ($line -match "^\s*---+\s*$" -or $line -match "^\s*\*\*\*+\s*$") {
-            [void]$sb.AppendLine("<hr style=`"$sHr`" />")
-        } elseif ($line -match "^\s*###\s+(.+)$") {
-            $h = Escape-Html $Matches[1]
-            $h = Apply-InlineMarkdown $h
-            [void]$sb.AppendLine("<h3 style=`"$sH3`">$h</h3>")
+        if ($line -match '^\s*>\s?(.*)$') {
+            if ($inUnorderedList) {
+                [void]$sb.AppendLine('</ul>')
+                $inUnorderedList = $false
+            }
+            if ($inOrderedList) {
+                [void]$sb.AppendLine('</ol>')
+                $inOrderedList = $false
+            }
+            if (-not $inBlockquote) {
+                [void]$sb.AppendLine('<blockquote style="margin:20px 0;padding:4px 0 4px 16px;border-left:4px solid #2f6fed;background:#f6f9ff;color:#445066;">')
+                $inBlockquote = $true
+            }
+            [void]$sb.AppendLine("<p style=""margin:10px 0;"">$(Convert-InlineMarkdown $Matches[1])</p>")
+            continue
+        } elseif ($inBlockquote) {
+            [void]$sb.AppendLine('</blockquote>')
+            $inBlockquote = $false
+        }
+
+        if ($line -match '^\s*[-*]\s+(.+)$') {
+            if ($inOrderedList) {
+                [void]$sb.AppendLine('</ol>')
+                $inOrderedList = $false
+            }
+            if (-not $inUnorderedList) {
+                [void]$sb.AppendLine('<ul style="margin:16px 0;padding-left:1.4em;color:#1f2329;">')
+                $inUnorderedList = $true
+            }
+            [void]$sb.AppendLine("<li style=""margin:8px 0;line-height:1.8;"">$(Convert-InlineMarkdown $Matches[1])</li>")
+            continue
+        } elseif ($inUnorderedList) {
+            [void]$sb.AppendLine('</ul>')
+            $inUnorderedList = $false
+        }
+
+        if ($line -match '^\s*\d+\.\s+(.+)$') {
+            if ($inUnorderedList) {
+                [void]$sb.AppendLine('</ul>')
+                $inUnorderedList = $false
+            }
+            if (-not $inOrderedList) {
+                [void]$sb.AppendLine('<ol style="margin:16px 0;padding-left:1.4em;color:#1f2329;">')
+                $inOrderedList = $true
+            }
+            [void]$sb.AppendLine("<li style=""margin:8px 0;line-height:1.8;"">$(Convert-InlineMarkdown $Matches[1])</li>")
+            continue
+        } elseif ($inOrderedList) {
+            [void]$sb.AppendLine('</ol>')
+            $inOrderedList = $false
+        }
+
+        if ($line -match '^\s*!\[(?<alt>[^\]]*)\]\((?<src>[^)]+)\)\s*$') {
+            $figureSrc = Escape-AttributeValue (Escape-Html $Matches['src'])
+            $figureAlt = Escape-AttributeValue (Escape-Html $Matches['alt'])
+            [void]$sb.AppendLine("<figure style=""margin:24px 0;""><img src=""$figureSrc"" alt=""$figureAlt"" style=""display:block;width:100%;max-width:100%;height:auto;border-radius:12px;"" /></figure>")
+            continue
+        }
+
+        if ($line -match '^\s*---+\s*$') {
+            [void]$sb.AppendLine('<hr style="margin:28px 0;border:none;border-top:1px solid #d8dee4;" />')
+            continue
+        }
+
+        if ($line -match "^\s*###\s+(.+)$") {
+            [void]$sb.AppendLine("<h3 style=""margin:22px 0 10px;font-size:18px;line-height:1.5;font-weight:700;color:#1f2329;"">$(Convert-InlineMarkdown $Matches[1])</h3>")
         } elseif ($line -match "^\s*##\s+(.+)$") {
-            $h = Escape-Html $Matches[1]
-            $h = Apply-InlineMarkdown $h
-            [void]$sb.AppendLine("<h2 style=`"$sH2`">$h</h2>")
+            [void]$sb.AppendLine("<h2 style=""margin:34px 0 14px;padding-left:12px;border-left:4px solid #2f6fed;font-size:22px;line-height:1.5;font-weight:700;color:#1f2329;"">$(Convert-InlineMarkdown $Matches[1])</h2>")
         } elseif ($line -match "^\s*#\s+(.+)$") {
-            $h = Escape-Html $Matches[1]
-            $h = Apply-InlineMarkdown $h
-            [void]$sb.AppendLine("<h1 style=`"$sH1`">$h</h1>")
-        } elseif ([string]::IsNullOrWhiteSpace($line)) {
-            continue
+            [void]$sb.AppendLine("<h1 style=""margin:0 0 24px;font-size:28px;line-height:1.45;font-weight:800;color:#1f2329;"">$(Convert-InlineMarkdown $Matches[1])</h1>")
         } else {
-            $p = Escape-Html $line
-            $p = Apply-InlineMarkdown $p
-            [void]$sb.AppendLine("<p style=`"$sP`">$p</p>")
+            [void]$sb.AppendLine("<p style=""margin:0 0 16px;text-align:justify;"">$(Convert-InlineMarkdown $line)</p>")
         }
     }
 
-    # flush any trailing state
-    if ($inQuote -and $quoteLines.Count -gt 0) {
-        $qText = Escape-Html ($quoteLines -join " ")
-        $qText = Apply-InlineMarkdown $qText
-        [void]$sb.AppendLine("<blockquote style=`"$sQuote`">$qText</blockquote>")
-    }
-    if ($inList) { Close-List }
-    if ($inTable) { Flush-Table }
-
-    [void]$sb.AppendLine("</section>")
+    if ($inBlockquote) { [void]$sb.AppendLine('</blockquote>') }
+    if ($inUnorderedList) { [void]$sb.AppendLine('</ul>') }
+    if ($inOrderedList) { [void]$sb.AppendLine('</ol>') }
+    if ($inCodeBlock) { [void]$sb.AppendLine('</code></pre>') }
+    [void]$sb.AppendLine('</section>')
     return $sb.ToString()
 }
 
@@ -385,7 +361,12 @@ function Replace-ImageSources([string]$Html, [string]$MarkdownPath, [string]$Acc
             }
             $newUrl = [string]$upload.url
             if ($newUrl -like "http://*") { $newUrl = $newUrl -replace "^http://", "https://" }
-            $updated = $updated.Replace($src, $newUrl)
+            $escapedNewUrl = Escape-AttributeValue $newUrl
+            $updatedTag = [regex]::Replace($m.Value, '(?is)(\bsrc\s*=\s*["''])([^"'']+)(["''])', {
+                param($srcMatch)
+                return $srcMatch.Groups[1].Value + $escapedNewUrl + $srcMatch.Groups[3].Value
+            })
+            $updated = $updated.Replace($m.Value, $updatedTag)
         } finally {
             if ($tempDownloaded -and (Test-Path $tempDownloaded)) {
                 Remove-Item -Force $tempDownloaded
@@ -430,19 +411,27 @@ try {
         throw "Markdown file not found: $File"
     }
 
-    if ($AutoCover) {
+    $shouldAutoCover = -not $NoAutoCover
+    if ($AutoCover -and $NoAutoCover) {
+        throw "Use either -AutoCover or -NoAutoCover, not both."
+    }
+
+    if ($shouldAutoCover) {
         if ([string]::IsNullOrWhiteSpace($AiApiKey)) {
-            throw "Auto cover requires -AiApiKey or env YUNWU_API_KEY."
+            throw "Auto cover is enabled by default and requires -AiApiKey or env YUNWU_API_KEY. Use -NoAutoCover to skip cover generation."
         }
         $coverScript = Join-Path -Path $PSScriptRoot -ChildPath "generate-cover.ps1"
-        Write-Info "Auto cover enabled. Generating cover..."
+        Write-Info "Auto cover enabled by default. Generating cover..."
         & $coverScript -MarkdownFile "$resolvedMarkdown" -BaseUrl "$AiBaseUrl" -Model "$AiModel" -ApiKey "$AiApiKey"
         if ($LASTEXITCODE -ne 0) {
             throw "Cover generation failed."
         }
+    } else {
+        Write-WarnLine "Skipping AI cover generation because -NoAutoCover was provided."
     }
 
-    $raw = [System.IO.File]::ReadAllText($resolvedMarkdown, [System.Text.Encoding]::UTF8)
+    Assert-MarkdownUtf8 -Path $resolvedMarkdown
+    $raw = Read-TextUtf8Strict -Path $resolvedMarkdown
     $fm = Parse-FrontMatter -MarkdownRaw $raw
     if ([string]::IsNullOrWhiteSpace($fm.title)) {
         throw "Frontmatter title is required."
@@ -454,9 +443,8 @@ try {
     Write-Info "Fetching access token..."
     $token = Get-AccessToken -AppId $env:WECHAT_APP_ID -AppSecret $env:WECHAT_APP_SECRET
 
-    Write-Info "Rendering markdown to HTML..."
-    $bodyOnly = Strip-FrontMatter -MarkdownRaw $raw
-    $html = Convert-MarkdownToBasicHtml -MarkdownRaw $bodyOnly
+    Write-Info "Rendering markdown to HTML with built-in styled renderer..."
+    $html = Convert-MarkdownToBasicHtml -MarkdownRaw $raw
     if ([string]::IsNullOrWhiteSpace($html)) {
         throw "Rendered HTML is empty."
     }

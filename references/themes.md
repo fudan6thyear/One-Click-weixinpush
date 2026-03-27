@@ -1,119 +1,34 @@
-# wenyan-cli 主题列表
+# 正文样式参考
 
-wenyan-cli 支持多种内置主题，也支持自定义主题。
+当前发布链路使用内置样式化渲染器，不再依赖 `wenyan` 主题系统。
 
-## 内置主题
+## 当前内置版式
 
-查看所有内置主题：
-```bash
-wenyan theme -l
-```
+- 一级标题：大字号粗体，用于文章主标题
+- 二级标题：左侧蓝色强调线，用于章节标题
+- 三级标题：中号粗体，用于小节标题
+- 正文段落：16px，较宽行距，默认两端对齐
+- 无序/有序列表：保留层级缩进和间距
+- 引用：浅蓝背景 + 左侧强调线
+- 行内代码：浅灰底色
+- 代码块：深色背景、圆角、自动换行
+- 图片：块级显示，自动适配宽度，带圆角
 
-**常用主题：**
+## 参数兼容性
 
-1. **default** - 默认主题
-   - 简洁、通用
-   - 适合大部分文章
+- `publish.ps1` 和 `publish-direct.ps1` 仍接受 `Theme` / `Highlight` 参数。
+- 这些参数仅为兼容旧命令而保留，不再影响当前内置渲染器输出。
 
-2. **lapis** - 青金石（推荐）
-   - 优雅的蓝色调
-   - 适合技术文章
+## 如果要继续优化版式
 
-3. **phycat** - 物理猫
-   - 轻量、现代
-   - 适合科技类内容
+可优先改进以下位置：
 
-**完整主题列表：** https://github.com/caol64/wenyan-core/tree/main/src/assets/themes
+- `scripts/publish-direct.ps1` 中的 `Convert-MarkdownToBasicHtml()`
+- `scripts/publish-direct.ps1` 中的 `Convert-InlineMarkdown()`
 
-## 代码高亮主题
+常见优化方向：
 
-### 亮色主题
-- `atom-one-light` - Atom 编辑器亮色
-- `github` - GitHub 风格
-- `solarized-light` - Solarized 亮色（推荐）
-- `xcode` - Xcode 默认
-
-### 暗色主题
-- `atom-one-dark` - Atom 编辑器暗色
-- `dracula` - Dracula 主题
-- `github-dark` - GitHub 暗色
-- `monokai` - Monokai 经典
-- `solarized-dark` - Solarized 暗色
-
-## 自定义主题
-
-### 临时使用
-```bash
-wenyan publish -f article.md -c /path/to/theme.css
-```
-
-### 永久安装
-```bash
-# 从本地文件
-wenyan theme --add --name my-theme --path /path/to/theme.css
-
-# 从网络
-wenyan theme --add --name my-theme --path https://example.com/theme.css
-```
-
-### 使用已安装主题
-```bash
-wenyan publish -f article.md -t my-theme
-```
-
-### 删除主题
-```bash
-wenyan theme --rm my-theme
-```
-
-## 主题定制
-
-如果你想创建自己的主题，可以参考：
-
-1. **查看现有主题源码：** https://github.com/caol64/wenyan-core/tree/main/src/assets/themes
-2. **CSS 变量参考：** wenyan 使用 CSS 变量定制样式
-3. **测试主题：** 使用 `wenyan render` 命令仅渲染不发布
-
-**示例：**
-```bash
-# 渲染测试（不发布）
-wenyan render -f article.md -t my-theme -h github
-```
-
-## 推荐组合
-
-### 技术文章
-```bash
-wenyan publish -f article.md -t lapis -h solarized-light
-```
-
-### 深色风格
-```bash
-wenyan publish -f article.md -t phycat -h dracula
-```
-
-### 简洁风格
-```bash
-wenyan publish -f article.md -t default -h github
-```
-
-## 更多选项
-
-### 关闭 Mac 风格代码块
-```bash
-wenyan publish -f article.md -t lapis --no-mac-style
-```
-
-### 关闭链接转脚注
-```bash
-wenyan publish -f article.md -t lapis --no-footnote
-```
-
-### 组合所有选项
-```bash
-wenyan publish -f article.md \
-  -t lapis \
-  -h solarized-light \
-  --no-mac-style \
-  --no-footnote
-```
+- 给“关键结论 / 关键事实”增加固定信息块样式
+- 优化段前段后距，让长文更适合公众号阅读
+- 针对法律条文、引用、列表做更细的视觉区分
+- 根据文章类型增加可选的内置样式预设

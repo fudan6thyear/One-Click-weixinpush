@@ -11,8 +11,39 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
+
+function Read-TextUtf8Strict([string]$Path) {
+    try {
+        $text = [System.IO.File]::ReadAllText($Path, (New-Object System.Text.UTF8Encoding($false, $true)))
+    } catch [System.Text.DecoderFallbackException] {
+        throw "Markdown file must be valid UTF-8: $Path"
+    }
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+        $text = $text.Substring(1)
+    }
+    return $text
+}
+
+function Read-LinesUtf8Strict([string]$Path) {
+    $text = Read-TextUtf8Strict -Path $Path
+    if ([string]::IsNullOrEmpty($text)) { return @() }
+    return $text -split "\r?\n"
+}
+
+function Write-TextUtf8([string]$Path, [string]$Text) {
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+    [void](Read-TextUtf8Strict -Path $Path)
+}
+
+function Write-LinesUtf8([string]$Path, [string[]]$Lines) {
+    $text = [string]::Join([Environment]::NewLine, $Lines)
+    Write-TextUtf8 -Path $Path -Text $text
+}
+
+function Assert-MarkdownUtf8([string]$Path) {
+    [void](Read-TextUtf8Strict -Path $Path)
+    Write-Host "UTF-8 check passed." -ForegroundColor Green
+}
 
 function Show-Help {
     @"
@@ -62,33 +93,70 @@ function Get-ContentSnippet([string]$Body) {
     $text = $text -replace '\s+', ' '
     $text = $text.Trim()
 
-    if ($text.Length -gt 500) {
-        return $text.Substring(0, 500)
+    if ($text.Length -gt 160) {
+        return $text.Substring(0, 160)
     }
     return $text
 }
 
+function Limit-Text([string]$Text, [int]$MaxLength) {
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ""
+    }
+
+    $trimmed = ($Text -replace '\s+', ' ').Trim()
+    if ($trimmed.Length -le $MaxLength) {
+        return $trimmed
+    }
+
+    return $trimmed.Substring(0, $MaxLength).TrimEnd() + "..."
+}
+
+function Get-VisualScene([string]$Title, [string]$Snippet) {
+    $combined = ($Title + ' ' + $Snippet).ToLower()
+
+    if ($combined -match 'privacy|隐私|personal data|个人信息|gdpr|ccpa|data protection|数据保护') {
+        return 'A glowing transparent shield floating above a city of interconnected data nodes, with an abstract silhouette of a person standing protected inside the shield, blue and white tones, dramatic lighting'
+    }
+
+    if ($combined -match '未成年|child|minor|youth|age verification|年龄|school|student') {
+        return 'A luminous bubble of soft light surrounding a small figure who is surrounded by colorful floating digital device icons; caring adult silhouettes forming a protective ring outside; warm and cool blue palette'
+    }
+
+    if ($combined -match 'law|legal|regulation|合规|法律|监管|enforcement|regulatory|penalty|处罚|court|judgment') {
+        return 'An imposing stone courthouse facade bathed in golden morning light, with translucent glowing network lines overlaid across the architecture, and abstract balanced scales as a faint holographic overlay'
+    }
+
+    if ($combined -match 'ai|artificial intelligence|automation|robot|机器人|就业|employment|job|工作|labor') {
+        return 'A human hand and a sleek robotic arm reaching toward each other across a glowing horizontal divide in a modern bright open-plan office, warm amber light on the human side, cool blue light on the machine side, cinematic depth of field'
+    }
+
+    if ($combined -match 'security|cybersecurity|breach|hack|漏洞|网络安全') {
+        return 'A luminous padlock made of circuit lines at the center of a dark digital storm of cascading abstract data fragments, red and electric blue energy streams, cinematic editorial style'
+    }
+
+    if ($combined -match 'business|strategy|enterprise|企业|商业|market|市场') {
+        return 'An aerial view of a chessboard city-grid at blue-hour dusk with one glowing golden skyscraper rising prominently above the others, long dramatic shadows, editorial illustration style'
+    }
+
+    return 'A lone researcher silhouette stands before a vast translucent wall of floating abstract knowledge nodes and glowing connection lines, cool blue and teal tones, modern editorial illustration'
+}
+
 function Build-Prompt([string]$Title, [string]$Snippet) {
+    $scene = Get-VisualScene -Title $Title -Snippet $Snippet
+
     return @"
-Create a clean, high-quality cover image for an article.
+NO TEXT RULE (absolute, highest priority): The final image must contain zero visible characters of any kind — no letters, no digits, no Chinese characters, no abbreviations, no labels, no captions, no logos, no watermarks. Violating this rule makes the image unusable.
 
-CRITICAL RULES:
-- ABSOLUTELY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO CHARACTERS of any language in the image
-- NO watermark, NO logo, NO caption, NO label, NO title overlay
-- The image must be purely visual/illustrative with ZERO text elements
+Create a landscape cover illustration with aspect ratio 2.35:1 (equivalent to 900x383 px) for a WeChat official account article.
 
-Style requirements:
-- Modern, editorial, magazine-quality composition
-- Rich color palette, professional lighting
-- Clear single visual focal point
-- Abstract or symbolic representation of the topic
-- Safe for all audiences
+Scene to illustrate: $scene
 
-The article is about:
-$Title
-
-Key themes to represent visually (use symbols, metaphors, objects — NOT text):
-$Snippet
+Additional requirements:
+- Horizontal landscape composition. Place the main focal element at center so it survives a square crop of the middle third.
+- Modern editorial illustration style, clean and professional, for a Chinese business or technology media outlet.
+- Strong contrast, rich colors — not washed-out or pastel.
+- No UI elements, no speech bubbles, no infographic labels.
 "@
 }
 
@@ -124,52 +192,24 @@ function Invoke-ImageGenerationOpenAI([string]$Endpoint, [string]$ApiKeyValue, [
     $payloadPrimary = @{
         model           = $ModelName
         prompt          = $Prompt
-        response_format = "b64_json"
+        size            = "2848x1216"
+        response_format = "url"
+        watermark       = $false
     }
 
     return Invoke-RestMethod -Method Post -Uri $Endpoint -Headers $headers -Body ($payloadPrimary | ConvertTo-Json -Depth 10)
-}
-
-function Invoke-ImageGenerationGemini([string]$BaseApiUrl, [string]$ApiKeyValue, [string]$ModelName, [string]$Prompt) {
-    $trimmed = $BaseApiUrl.TrimEnd("/")
-    $endpoint = "$trimmed/v1beta/models/$ModelName`:generateContent?key=$ApiKeyValue"
-    $payload = @{
-        contents = @(
-            @{
-                parts = @(
-                    @{
-                        text = $Prompt
-                    }
-                )
-            }
-        )
-    }
-
-    return Invoke-RestMethod -Method Post -Uri $endpoint -ContentType "application/json" -Body ($payload | ConvertTo-Json -Depth 20) -TimeoutSec 60
-}
-
-function Use-GeminiEndpoint([string]$ModelName) {
-    return $ModelName -like "gemini-*"
 }
 
 function Save-ImageFromResponse([object]$Response, [string]$OutputFile) {
     if ($null -ne $Response.data -and $Response.data.Count -gt 0) {
         $first = $Response.data[0]
         if ($null -ne $first.b64_json -and $first.b64_json -ne "") {
-            $encoded = [string]$first.b64_json
-            if ($encoded -match '^data:[^;]+;base64,(.+)$') {
-                $encoded = $Matches[1]
-            }
-            $bytes = [System.Convert]::FromBase64String($encoded)
+            $bytes = [System.Convert]::FromBase64String([string]$first.b64_json)
             [System.IO.File]::WriteAllBytes($OutputFile, $bytes)
             return
         }
         if ($null -ne $first.base64 -and $first.base64 -ne "") {
-            $encoded = [string]$first.base64
-            if ($encoded -match '^data:[^;]+;base64,(.+)$') {
-                $encoded = $Matches[1]
-            }
-            $bytes = [System.Convert]::FromBase64String($encoded)
+            $bytes = [System.Convert]::FromBase64String([string]$first.base64)
             [System.IO.File]::WriteAllBytes($OutputFile, $bytes)
             return
         }
@@ -183,29 +223,8 @@ function Save-ImageFromResponse([object]$Response, [string]$OutputFile) {
     throw "Cannot parse image from API response: $json"
 }
 
-function Save-ImageFromGeminiResponse([object]$Response, [string]$OutputFileBaseNoExt) {
-    if ($null -eq $Response.candidates -or $Response.candidates.Count -eq 0) {
-        $json = $Response | ConvertTo-Json -Depth 8
-        throw "Gemini response has no candidates: $json"
-    }
-
-    $parts = $Response.candidates[0].content.parts
-    foreach ($part in $parts) {
-        if ($null -ne $part.inlineData -and $null -ne $part.inlineData.data -and $part.inlineData.data -ne "") {
-            $mime = [string]$part.inlineData.mimeType
-            $ext = if ($mime -eq "image/png") { ".png" } elseif ($mime -eq "image/webp") { ".webp" } else { ".jpg" }
-            $target = "$OutputFileBaseNoExt$ext"
-            [System.IO.File]::WriteAllBytes($target, [System.Convert]::FromBase64String([string]$part.inlineData.data))
-            return $target
-        }
-    }
-
-    $json = $Response | ConvertTo-Json -Depth 8
-    throw "Gemini response has no inline image data: $json"
-}
-
 function Update-MarkdownCover([string]$MarkdownPath, [string]$CoverRelativePath, [string]$Title) {
-    $lines = [System.IO.File]::ReadAllLines($MarkdownPath, [System.Text.Encoding]::UTF8)
+    $lines = Read-LinesUtf8Strict -Path $MarkdownPath
     $newCoverLine = "cover: $CoverRelativePath"
 
     if ($lines.Count -gt 0 -and $lines[0].Trim() -eq "---") {
@@ -233,7 +252,7 @@ function Update-MarkdownCover([string]$MarkdownPath, [string]$CoverRelativePath,
                 $lines = @($lines[0..($end - 1)] + $newCoverLine + $lines[$end..($lines.Count - 1)])
             }
 
-            [System.IO.File]::WriteAllLines($MarkdownPath, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+            Write-LinesUtf8 -Path $MarkdownPath -Lines $lines
             return
         }
     }
@@ -245,7 +264,7 @@ function Update-MarkdownCover([string]$MarkdownPath, [string]$CoverRelativePath,
         "---"
         ""
     ) + $lines
-    [System.IO.File]::WriteAllLines($MarkdownPath, [string[]]$injected, (New-Object System.Text.UTF8Encoding($false)))
+    Write-LinesUtf8 -Path $MarkdownPath -Lines $injected
 }
 
 try {
@@ -263,11 +282,12 @@ try {
         throw "Markdown file not found: $MarkdownFile"
     }
 
+    Assert-MarkdownUtf8 -Path $resolvedMarkdown
     if ([string]::IsNullOrWhiteSpace($ApiKey)) {
         throw "API key is missing. Set YUNWU_API_KEY or pass -ApiKey."
     }
 
-    $raw = [System.IO.File]::ReadAllText([string]$resolvedMarkdown, [System.Text.Encoding]::UTF8)
+    $raw = Read-TextUtf8Strict -Path $resolvedMarkdown
     $parts = Get-FrontMatterAndBody -Raw $raw
     $title = Get-Title -FrontMatter $parts.FrontMatter -Body $parts.Body -FallbackFile $resolvedMarkdown
     $snippet = Get-ContentSnippet -Body $parts.Body
@@ -286,36 +306,14 @@ try {
     $outputBase = Join-Path -Path $folder -ChildPath $fileNameBase
     $generatedFile = $null
 
-    if (Use-GeminiEndpoint -ModelName $Model) {
-        try {
-            Write-Host "Generating cover via Gemini endpoint on $BaseUrl ..."
-            $geminiAction = {
-                Invoke-ImageGenerationGemini -BaseApiUrl $BaseUrl -ApiKeyValue $ApiKey -ModelName $Model -Prompt $prompt
-            }
-            $geminiResponse = Invoke-WithRetry -Action $geminiAction -MaxAttempts $RetryCount -DelaySec $RetryDelaySec -Name "Gemini generateContent"
-            $generatedFile = Save-ImageFromGeminiResponse -Response $geminiResponse -OutputFileBaseNoExt $outputBase
-        }
-        catch {
-            Write-Host "Gemini endpoint failed, fallback to OpenAI images endpoint..." -ForegroundColor Yellow
-            $openaiEndpoint = "$($BaseUrl.TrimEnd('/'))/v1/images/generations"
-            $openaiAction = {
-                Invoke-ImageGenerationOpenAI -Endpoint $openaiEndpoint -ApiKeyValue $ApiKey -ModelName $Model -Prompt $prompt
-            }
-            $openaiResponse = Invoke-WithRetry -Action $openaiAction -MaxAttempts ([Math]::Max(1, [Math]::Floor($RetryCount / 2))) -DelaySec $RetryDelaySec -Name "OpenAI images"
-            $generatedFile = "$outputBase.png"
-            Save-ImageFromResponse -Response $openaiResponse -OutputFile $generatedFile
-        }
+    $imagesEndpoint = "$($BaseUrl.TrimEnd('/'))/v1/images/generations"
+    Write-Host "Generating cover via images endpoint on $BaseUrl ..."
+    $imagesAction = {
+        Invoke-ImageGenerationOpenAI -Endpoint $imagesEndpoint -ApiKeyValue $ApiKey -ModelName $Model -Prompt $prompt
     }
-    else {
-        Write-Host "Generating cover via OpenAI images endpoint on $BaseUrl ..."
-        $openaiEndpoint = "$($BaseUrl.TrimEnd('/'))/v1/images/generations"
-        $openaiAction = {
-            Invoke-ImageGenerationOpenAI -Endpoint $openaiEndpoint -ApiKeyValue $ApiKey -ModelName $Model -Prompt $prompt
-        }
-        $openaiResponse = Invoke-WithRetry -Action $openaiAction -MaxAttempts $RetryCount -DelaySec $RetryDelaySec -Name "OpenAI images"
-        $generatedFile = "$outputBase.png"
-        Save-ImageFromResponse -Response $openaiResponse -OutputFile $generatedFile
-    }
+    $imagesResponse = Invoke-WithRetry -Action $imagesAction -MaxAttempts $RetryCount -DelaySec $RetryDelaySec -Name "Images generation"
+    $generatedFile = "$outputBase.png"
+    Save-ImageFromResponse -Response $imagesResponse -OutputFile $generatedFile
 
     $coverRelative = "./assets/$([System.IO.Path]::GetFileName($generatedFile))"
     if (-not $NoUpdateMarkdown) {
