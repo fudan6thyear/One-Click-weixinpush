@@ -8,7 +8,7 @@ param(
     [string]$ToolsFile = "$HOME\.openclaw\workspace\TOOLS.md",
     [switch]$AutoCover,
     [string]$AiBaseUrl = "https://yunwu.ai",
-    [string]$AiModel = "gemini-3-pro-image-preview",
+    [string]$AiModel = "doubao-seedream-5-0-260128",
     [string]$AiApiKey = $env:YUNWU_API_KEY,
     [switch]$SkipInstall,
     [switch]$Help
@@ -49,7 +49,7 @@ Options:
   -ToolsFile    TOOLS.md path, default: $HOME\.openclaw\workspace\TOOLS.md
   -AutoCover    Generate AI cover before publish
   -AiBaseUrl    AI API base URL, default: https://yunwu.ai
-  -AiModel      AI image model, default: gemini-3-pro-image-preview
+  -AiModel      AI image model, default: doubao-seedream-5-0-260128
   -AiApiKey     AI API key (or set env: YUNWU_API_KEY)
   -Help         Show this help
 "@ | Write-Host

@@ -55,7 +55,7 @@ $env:YUNWU_API_KEY = "your_yunwu_api_key"
 ## 默认 AI 配置
 
 - BaseUrl: `https://yunwu.ai`
-- 主模型: `gemini-3-pro-image-preview`
-- 备选模型: `doubao-seedream-5-0-260128`
+- 主模型: `doubao-seedream-5-0-260128`
+- 备选模型: `gemini-3-pro-image-preview`
 - 备选端点: `/v1/images/generations`
 

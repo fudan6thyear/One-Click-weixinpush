@@ -32,8 +32,8 @@ $env:YUNWU_API_KEY = "your_yunwu_key"
 ## AI 生图默认配置
 
 - `BaseUrl`: `https://yunwu.ai`
-- `Model`: `gemini-3-pro-image-preview`
-- `FallbackModel`: `doubao-seedream-5-0-260128`
+- `Model`: `doubao-seedream-5-0-260128`
+- `FallbackModel`: `gemini-3-pro-image-preview`
 - `OpenAIImagePath`: `/v1/images/generations`
 
 ## 目录结构

@@ -1,7 +1,7 @@
 param(
     [string]$MarkdownFile = "",
     [string]$BaseUrl = "https://yunwu.ai",
-    [string]$Model = "gemini-3-pro-image-preview",
+    [string]$Model = "doubao-seedream-5-0-260128",
     [string]$ApiKey = $env:YUNWU_API_KEY,
     [string]$OutputDir = "",
     [int]$RetryCount = 5,
@@ -21,7 +21,7 @@ Usage:
 
 Options:
   -BaseUrl           API base URL (default: https://yunwu.ai)
-  -Model             image model (default: gemini-3-pro-image-preview)
+  -Model             image model (default: doubao-seedream-5-0-260128)
   -ApiKey            API key (default from env: YUNWU_API_KEY)
   -OutputDir         output folder (default: <markdown-dir>\assets)
   -RetryCount        retry attempts for flaky upstreams (default: 5)
@@ -148,16 +148,28 @@ function Invoke-ImageGenerationGemini([string]$BaseApiUrl, [string]$ApiKeyValue,
     return Invoke-RestMethod -Method Post -Uri $endpoint -ContentType "application/json" -Body ($payload | ConvertTo-Json -Depth 20) -TimeoutSec 60
 }
 
+function Use-GeminiEndpoint([string]$ModelName) {
+    return $ModelName -like "gemini-*"
+}
+
 function Save-ImageFromResponse([object]$Response, [string]$OutputFile) {
     if ($null -ne $Response.data -and $Response.data.Count -gt 0) {
         $first = $Response.data[0]
         if ($null -ne $first.b64_json -and $first.b64_json -ne "") {
-            $bytes = [System.Convert]::FromBase64String([string]$first.b64_json)
+            $encoded = [string]$first.b64_json
+            if ($encoded -match '^data:[^;]+;base64,(.+)$') {
+                $encoded = $Matches[1]
+            }
+            $bytes = [System.Convert]::FromBase64String($encoded)
             [System.IO.File]::WriteAllBytes($OutputFile, $bytes)
             return
         }
         if ($null -ne $first.base64 -and $first.base64 -ne "") {
-            $bytes = [System.Convert]::FromBase64String([string]$first.base64)
+            $encoded = [string]$first.base64
+            if ($encoded -match '^data:[^;]+;base64,(.+)$') {
+                $encoded = $Matches[1]
+            }
+            $bytes = [System.Convert]::FromBase64String($encoded)
             [System.IO.File]::WriteAllBytes($OutputFile, $bytes)
             return
         }
@@ -274,21 +286,33 @@ try {
     $outputBase = Join-Path -Path $folder -ChildPath $fileNameBase
     $generatedFile = $null
 
-    try {
-        Write-Host "Generating cover via Gemini endpoint on $BaseUrl ..."
-        $geminiAction = {
-            Invoke-ImageGenerationGemini -BaseApiUrl $BaseUrl -ApiKeyValue $ApiKey -ModelName $Model -Prompt $prompt
+    if (Use-GeminiEndpoint -ModelName $Model) {
+        try {
+            Write-Host "Generating cover via Gemini endpoint on $BaseUrl ..."
+            $geminiAction = {
+                Invoke-ImageGenerationGemini -BaseApiUrl $BaseUrl -ApiKeyValue $ApiKey -ModelName $Model -Prompt $prompt
+            }
+            $geminiResponse = Invoke-WithRetry -Action $geminiAction -MaxAttempts $RetryCount -DelaySec $RetryDelaySec -Name "Gemini generateContent"
+            $generatedFile = Save-ImageFromGeminiResponse -Response $geminiResponse -OutputFileBaseNoExt $outputBase
         }
-        $geminiResponse = Invoke-WithRetry -Action $geminiAction -MaxAttempts $RetryCount -DelaySec $RetryDelaySec -Name "Gemini generateContent"
-        $generatedFile = Save-ImageFromGeminiResponse -Response $geminiResponse -OutputFileBaseNoExt $outputBase
+        catch {
+            Write-Host "Gemini endpoint failed, fallback to OpenAI images endpoint..." -ForegroundColor Yellow
+            $openaiEndpoint = "$($BaseUrl.TrimEnd('/'))/v1/images/generations"
+            $openaiAction = {
+                Invoke-ImageGenerationOpenAI -Endpoint $openaiEndpoint -ApiKeyValue $ApiKey -ModelName $Model -Prompt $prompt
+            }
+            $openaiResponse = Invoke-WithRetry -Action $openaiAction -MaxAttempts ([Math]::Max(1, [Math]::Floor($RetryCount / 2))) -DelaySec $RetryDelaySec -Name "OpenAI images"
+            $generatedFile = "$outputBase.png"
+            Save-ImageFromResponse -Response $openaiResponse -OutputFile $generatedFile
+        }
     }
-    catch {
-        Write-Host "Gemini endpoint failed, fallback to OpenAI images endpoint..." -ForegroundColor Yellow
+    else {
+        Write-Host "Generating cover via OpenAI images endpoint on $BaseUrl ..."
         $openaiEndpoint = "$($BaseUrl.TrimEnd('/'))/v1/images/generations"
         $openaiAction = {
             Invoke-ImageGenerationOpenAI -Endpoint $openaiEndpoint -ApiKeyValue $ApiKey -ModelName $Model -Prompt $prompt
         }
-        $openaiResponse = Invoke-WithRetry -Action $openaiAction -MaxAttempts ([Math]::Max(1, [Math]::Floor($RetryCount / 2))) -DelaySec $RetryDelaySec -Name "OpenAI images"
+        $openaiResponse = Invoke-WithRetry -Action $openaiAction -MaxAttempts $RetryCount -DelaySec $RetryDelaySec -Name "OpenAI images"
         $generatedFile = "$outputBase.png"
         Save-ImageFromResponse -Response $openaiResponse -OutputFile $generatedFile
     }

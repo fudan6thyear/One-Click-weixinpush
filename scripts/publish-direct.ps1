@@ -8,7 +8,7 @@ param(
     [string]$ToolsFile = "$HOME\.openclaw\workspace\TOOLS.md",
     [switch]$AutoCover,
     [string]$AiBaseUrl = "https://yunwu.ai",
-    [string]$AiModel = "gemini-3-pro-image-preview",
+    [string]$AiModel = "doubao-seedream-5-0-260128",
     [string]$AiApiKey = $env:YUNWU_API_KEY,
     [switch]$Help
 )
@@ -35,7 +35,7 @@ Options:
   -ToolsFile    TOOLS.md path, default: $HOME\.openclaw\workspace\TOOLS.md
   -AutoCover    Generate AI cover before publish
   -AiBaseUrl    AI API base URL, default: https://yunwu.ai
-  -AiModel      AI image model, default: gemini-3-pro-image-preview
+  -AiModel      AI image model, default: doubao-seedream-5-0-260128
   -AiApiKey     AI API key (or set env: YUNWU_API_KEY)
   -Help         Show this help
 "@ | Write-Host
@@ -141,29 +141,6 @@ function Upload-Material([string]$AccessToken, [string]$LocalFilePath, [string]$
     throw "Upload material failed: $($res | ConvertTo-Json -Depth 6 -Compress)"
 }
 
-function Render-Html([string]$MarkdownFilePath, [string]$ThemeName, [string]$HighlightName) {
-    $tempHtml = Join-Path $env:TEMP ("wenyan-render-" + [guid]::NewGuid().ToString("N") + ".html")
-    $stderrFile = Join-Path $env:TEMP ("wenyan-render-" + [guid]::NewGuid().ToString("N") + ".stderr.txt")
-    try {
-        $argLine = "render -f `"$MarkdownFilePath`" -t `"$ThemeName`" -h `"$HighlightName`""
-        $proc = Start-Process -FilePath "wenyan" -ArgumentList $argLine -NoNewWindow -RedirectStandardOutput $tempHtml -RedirectStandardError $stderrFile -PassThru
-        $finished = $proc.WaitForExit(25000)
-        if (-not $finished) {
-            try { Stop-Process -Id $proc.Id -Force } catch {}
-            throw "wenyan render timeout"
-        }
-        if ($proc.ExitCode -ne 0) {
-            $stderr = ""
-            if (Test-Path $stderrFile) { $stderr = [System.IO.File]::ReadAllText($stderrFile, [System.Text.Encoding]::UTF8) }
-            throw "wenyan render failed: $stderr"
-        }
-        return [System.IO.File]::ReadAllText($tempHtml, [System.Text.Encoding]::UTF8)
-    } finally {
-        if (Test-Path $tempHtml) { Remove-Item -Force $tempHtml }
-        if (Test-Path $stderrFile) { Remove-Item -Force $stderrFile }
-    }
-}
-
 function Escape-Html([string]$Text) {
     return $Text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
 }
@@ -173,9 +150,21 @@ function Apply-InlineMarkdown([string]$Text) {
     $t = [regex]::Replace($t, '\*\*(.+?)\*\*', '<strong style="font-weight:bold;color:#1a1a1a;">$1</strong>')
     $t = [regex]::Replace($t, '(?<!\*)\*([^*]+?)\*(?!\*)', '<em style="font-style:italic;">$1</em>')
     $t = [regex]::Replace($t, '`([^`]+?)`', '<code style="font-size:14px;background:#f5f5f5;padding:2px 6px;border-radius:3px;color:#c7254e;font-family:Consolas,monospace;">$1</code>')
-    $t = [regex]::Replace($t, '\[([^\]]+)\]\(([^)]+)\)', '<a href="$2" style="color:#576b95;text-decoration:none;border-bottom:1px solid #576b95;">$1</a>')
     $t = [regex]::Replace($t, '!\[[^\]]*\]\(([^)]+)\)', '<img src="$1" style="max-width:100%;border-radius:4px;margin:8px 0;" />')
+    $t = [regex]::Replace($t, '\[([^\]]+)\]\(([^)]+)\)', '<a href="$2" style="color:#576b95;text-decoration:none;border-bottom:1px solid #576b95;">$1</a>')
     return $t
+}
+
+function Parse-TableRow([string]$Line) {
+    $trimmed = $Line.Trim().TrimStart('|').TrimEnd('|')
+    $cells = $trimmed -split '\|'
+    $result = @()
+    foreach ($c in $cells) { $result += $c.Trim() }
+    return ,$result
+}
+
+function Test-TableSeparator([string]$Line) {
+    return $Line -match '^\s*\|[\s\-:]+(\|[\s\-:]+)+\|\s*$'
 }
 
 function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
@@ -184,27 +173,112 @@ function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
     $sH2     = 'font-size:18px;font-weight:bold;color:#2b2b2b;margin:24px 0 12px;padding-left:12px;border-left:4px solid #576b95;line-height:1.5;'
     $sH3     = 'font-size:16px;font-weight:bold;color:#3f3f3f;margin:20px 0 10px;line-height:1.5;'
     $sP      = 'font-size:15px;color:#3f3f3f;line-height:1.8;margin:10px 0;letter-spacing:0.5px;text-align:justify;'
-    $sLi     = 'font-size:15px;color:#3f3f3f;line-height:1.8;margin:6px 0;letter-spacing:0.5px;'
-    $sUl     = 'margin:10px 0 10px 20px;padding:0;list-style:disc;'
-    $sOl     = 'margin:10px 0 10px 20px;padding:0;list-style:decimal;'
+    $sLi     = 'font-size:15px;color:#3f3f3f;line-height:1.8;margin:0;padding:2px 0;letter-spacing:0.5px;'
+    $sUl     = 'margin:8px 0 8px 1.2em;padding:0;list-style:disc;list-style-position:outside;'
+    $sOl     = 'margin:8px 0 8px 1.4em;padding:0;list-style:decimal;list-style-position:outside;'
     $sQuote  = 'margin:16px 0;padding:12px 16px;background:#f8f8f8;border-left:4px solid #576b95;color:#666;font-size:14px;line-height:1.7;border-radius:0 4px 4px 0;'
     $sHr     = 'border:none;border-top:1px solid #e5e5e5;margin:24px 0;'
-    $sImg    = 'max-width:100%;border-radius:4px;margin:12px auto;display:block;'
+    $sTable  = 'width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;line-height:1.6;'
+    $sTh     = 'background:#f2f3f5;font-weight:bold;color:#1a1a1a;border:1px solid #ddd;padding:8px 12px;text-align:left;'
+    $sTd     = 'border:1px solid #ddd;padding:8px 12px;color:#3f3f3f;'
 
     $inList = $false
     $listType = ""
     $inQuote = $false
     $quoteLines = @()
+    $inTable = $false
+    $tableHeaderCells = @()
+    $tableRows = @()
+    $tableHasHeader = $false
     $sb = New-Object System.Text.StringBuilder
+
+    function Close-List {
+        if (-not $inList) { return }
+        $closeTag = if ($listType -eq "ol") { "</ol>" } else { "</ul>" }
+        [void]$sb.AppendLine($closeTag)
+        Set-Variable -Scope 1 -Name inList -Value $false
+        Set-Variable -Scope 1 -Name listType -Value ""
+    }
+
+    function Open-List([string]$NextListType) {
+        if ($inList -and $listType -eq $NextListType) { return }
+        Close-List
+        $openTag = if ($NextListType -eq "ol") { "<ol style=`"$sOl`">" } else { "<ul style=`"$sUl`">" }
+        [void]$sb.AppendLine($openTag)
+        Set-Variable -Scope 1 -Name inList -Value $true
+        Set-Variable -Scope 1 -Name listType -Value $NextListType
+    }
+
+    function Flush-Table {
+        if (-not $inTable) { return }
+        [void]$sb.AppendLine("<table style=`"$sTable`">")
+        if ($tableHasHeader -and $tableHeaderCells.Count -gt 0) {
+            [void]$sb.Append("<thead><tr>")
+            foreach ($cell in $tableHeaderCells) {
+                $c = Escape-Html $cell
+                $c = Apply-InlineMarkdown $c
+                [void]$sb.Append("<th style=`"$sTh`">$c</th>")
+            }
+            [void]$sb.AppendLine("</tr></thead>")
+        }
+        if ($tableRows.Count -gt 0) {
+            [void]$sb.AppendLine("<tbody>")
+            foreach ($row in $tableRows) {
+                [void]$sb.Append("<tr>")
+                foreach ($cell in $row) {
+                    $c = Escape-Html $cell
+                    $c = Apply-InlineMarkdown $c
+                    [void]$sb.Append("<td style=`"$sTd`">$c</td>")
+                }
+                [void]$sb.AppendLine("</tr>")
+            }
+            [void]$sb.AppendLine("</tbody>")
+        }
+        [void]$sb.AppendLine("</table>")
+        Set-Variable -Scope 1 -Name inTable -Value $false
+        Set-Variable -Scope 1 -Name tableHeaderCells -Value @()
+        Set-Variable -Scope 1 -Name tableRows -Value @()
+        Set-Variable -Scope 1 -Name tableHasHeader -Value $false
+    }
 
     [void]$sb.AppendLine("<section style=`"$sBody`">")
 
     $lines = $MarkdownRaw -split "\r?\n"
-    foreach ($lineRaw in $lines) {
-        $line = $lineRaw.TrimEnd()
+    for ($idx = 0; $idx -lt $lines.Count; $idx++) {
+        $line = $lines[$idx].Replace([char]0x00A0, ' ').TrimEnd()
+        $trimmedLine = $line.Trim()
 
+        # --- table handling ---
+        if ($line -match '^\s*\|.+\|\s*$') {
+            Close-List
+            if (-not $inTable) {
+                $inTable = $true
+                $tableHeaderCells = @()
+                $tableRows = @()
+                $tableHasHeader = $false
+
+                $cells = Parse-TableRow $line
+                $nextIdx = $idx + 1
+                if ($nextIdx -lt $lines.Count -and (Test-TableSeparator $lines[$nextIdx])) {
+                    $tableHeaderCells = $cells
+                    $tableHasHeader = $true
+                    $idx = $nextIdx
+                } else {
+                    $tableRows += ,$cells
+                }
+            } else {
+                if (Test-TableSeparator $line) { continue }
+                $cells = Parse-TableRow $line
+                $tableRows += ,$cells
+            }
+            continue
+        } elseif ($inTable) {
+            Flush-Table
+        }
+
+        # --- blockquote ---
         if ($line -match "^\s*>\s?(.*)$") {
-            if ($inList) { [void]$sb.AppendLine("</ul>"); $inList = $false }
+            Close-List
             $inQuote = $true
             $quoteLines += $Matches[1]
             continue
@@ -216,30 +290,33 @@ function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
             $quoteLines = @()
         }
 
+        # --- lists ---
+        if ($inList -and [string]::IsNullOrWhiteSpace($trimmedLine)) {
+            # Keep list open across blank lines to preserve numbering and spacing.
+            continue
+        }
+
         if ($line -match "^\s*[-*]\s+(.+)$") {
-            if (-not $inList) {
-                [void]$sb.AppendLine("<ul style=`"$sUl`">")
-                $inList = $true; $listType = "ul"
-            }
-            $li = Escape-Html $Matches[1]
+            $itemText = $Matches[1].Trim()
+            if ([string]::IsNullOrWhiteSpace($itemText)) { continue }
+            Open-List -NextListType "ul"
+            $li = Escape-Html $itemText
             $li = Apply-InlineMarkdown $li
             [void]$sb.AppendLine("<li style=`"$sLi`">$li</li>")
             continue
         } elseif ($line -match "^\s*(\d+)\.\s+(.+)$") {
-            if (-not $inList) {
-                [void]$sb.AppendLine("<ol style=`"$sOl`">")
-                $inList = $true; $listType = "ol"
-            }
-            $li = Escape-Html $Matches[2]
+            $itemText = $Matches[2].Trim()
+            if ([string]::IsNullOrWhiteSpace($itemText)) { continue }
+            Open-List -NextListType "ol"
+            $li = Escape-Html $itemText
             $li = Apply-InlineMarkdown $li
             [void]$sb.AppendLine("<li style=`"$sLi`">$li</li>")
             continue
         } elseif ($inList) {
-            $closeTag = if ($listType -eq "ol") { "</ol>" } else { "</ul>" }
-            [void]$sb.AppendLine($closeTag)
-            $inList = $false
+            Close-List
         }
 
+        # --- block elements ---
         if ($line -match "^\s*---+\s*$" -or $line -match "^\s*\*\*\*+\s*$") {
             [void]$sb.AppendLine("<hr style=`"$sHr`" />")
         } elseif ($line -match "^\s*###\s+(.+)$") {
@@ -263,15 +340,14 @@ function Convert-MarkdownToBasicHtml([string]$MarkdownRaw) {
         }
     }
 
+    # flush any trailing state
     if ($inQuote -and $quoteLines.Count -gt 0) {
         $qText = Escape-Html ($quoteLines -join " ")
         $qText = Apply-InlineMarkdown $qText
         [void]$sb.AppendLine("<blockquote style=`"$sQuote`">$qText</blockquote>")
     }
-    if ($inList) {
-        $closeTag = if ($listType -eq "ol") { "</ol>" } else { "</ul>" }
-        [void]$sb.AppendLine($closeTag)
-    }
+    if ($inList) { Close-List }
+    if ($inTable) { Flush-Table }
 
     [void]$sb.AppendLine("</section>")
     return $sb.ToString()
@@ -346,8 +422,6 @@ try {
         exit 0
     }
 
-    Ensure-Command -CommandName "node" -InstallHint "Install Node.js first."
-    Ensure-Command -CommandName "wenyan" -InstallHint "Install with: npm install -g @wenyan-md/cli"
     Ensure-Command -CommandName "curl.exe" -InstallHint "curl is required on Windows."
     Ensure-Credentials
 
@@ -381,13 +455,8 @@ try {
     $token = Get-AccessToken -AppId $env:WECHAT_APP_ID -AppSecret $env:WECHAT_APP_SECRET
 
     Write-Info "Rendering markdown to HTML..."
-    try {
-        $html = Render-Html -MarkdownFilePath $resolvedMarkdown -ThemeName $Theme -HighlightName $Highlight
-    } catch {
-        Write-WarnLine "wenyan render unavailable ($($_.Exception.Message)); fallback to basic markdown renderer."
-        $bodyOnly = Strip-FrontMatter -MarkdownRaw $raw
-        $html = Convert-MarkdownToBasicHtml -MarkdownRaw $bodyOnly
-    }
+    $bodyOnly = Strip-FrontMatter -MarkdownRaw $raw
+    $html = Convert-MarkdownToBasicHtml -MarkdownRaw $bodyOnly
     if ([string]::IsNullOrWhiteSpace($html)) {
         throw "Rendered HTML is empty."
     }
